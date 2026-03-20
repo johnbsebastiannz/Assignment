@@ -1,2 +1,2 @@
 # Assignment
-description here
+Halter SRE - Network assignment
