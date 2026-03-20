@@ -1,0 +1,267 @@
+RCA for incident reported last 2025Jul23 on AU/NZ farm where LTE latency was not affected.
+
+######################
+### Sanity Token   ###
+######################
+
+Sanity Token = 0.60 (dB)
+
+Process:
+	1) Used Excel for gateway_metrics 
+		Filter 	region="NZ-WKO"
+		Filter 	ts_ust>=6:00amUTC
+		Filter  ts_ust<=7:30amUTC
+		AVG(lora_snr_db)
+
+		Command something like
+			=round(X,2)
+				X=averageif(I:I,
+						C:C, "NZ-WKO",
+						A:A, ">="&timevalue("06:00:00"),
+						A:A, "<="&timevalue("07:30:00")
+
+	Alternate approach*
+		Splunk query should something like
+			index=* region="NZ-WKO" | timechart span=90m avg(lora_snr_db) by lora_snr_db
+
+######################
+### Triage and RCA ###
+######################
+Impact
+
+Where: 
+	Region="NZ-WKO"
+When: 
+	logs local time from 5:30:00am to 8:00:00am
+			Info from gateway_metrics
+			Timechart all metrics to see fluctuation (see images) 
+	
+Severity:
+	1/3 farms
+		Only "NZ-WKO-101" was affected. "AU-NSW*" not affected
+			Info from gateway_metrics
+	1/2 region
+		Only "NZ-WKO" is affected. "AU-NSW" was not affected.
+			Info from gateway_metrics
+	3/6 frequency band
+		Not affected center_mhz (903.9, 904.7, 904.9)
+		Affected center_mhz (904.1,904.3, 904.5 ) 
+			Info from rf_scan
+
+Assumptions:
+	1) Based from logs(rf_monitor_NZ-WKO-101), irrigation pump ran. 
+		Pump could've have the same oscillation frequency same as to the affected frequency range.
+	2) LTE is not affected while LORA degraded probably due to the fact that the pump is located near or inbetween light of site from collar+gateway+tower (from topology_NZ-WKO)
+
+
+
+	
+
+
+######################
+###SLO Check +Plots###
+######################
+
+Baseline:
+     - Latency SLO: P95 ≤ 8000 ms
+     - Success SLO: ≥ 98.5%
+
+
+downlink_success Rate per hour per regiion:
+
+		SuccessRate= downlink_success=1 / downlink_success=*
+
+	1) convert command.ts_utc to hourly text
+		=MID(A2, 12, 2)
+	2) Create Pivot table
+		Rows: Hour
+		Column: regions
+		Values: Average of Downlink Success
+
+
+hour	AU-NSW		NZ-WKO
+00	0.993966817	0.996969697
+01	0.995412844	0.99691358
+02	0.996732026	0.996805112
+03	0.99556213	0.996904025
+04	0.996941896	0.994318182
+05	0.995548961	0.970779221 warning
+06	0.996927803	0.961988304 critical
+07	0.994108984	0.918566775 critical
+08	0.9953125	0.994252874
+09	0.996941896	0.990853659
+10	0.995447648	0.996923077
+11	0.995356037	0.996941896
+12	0.992732558	0.991712707
+13	0.998531571	0.990909091
+14	0.993874426	1
+15	0.998491704	1
+16	0.998531571	0.991017964
+17	0.995468278	0.994065282
+18	0.99543379	0.987841945 warning
+19	0.994029851	0.984615385 warning
+20	0.995268139	0.997101449
+21	0.990853659	1
+22	0.991084695	0.991044776
+23	0.99702381	0.984848485 warning
+Total	0.995394903	0.988754107
+
+	
+		Alternate approach*
+		Splunk query should something like
+			index=* 
+			| eval hour_bucket = strftime(_time, "%Y-%m-%dT%H")
+			| stats count AS total_commands,
+        			sum(downlink_success) AS successful_commands
+        			BY hour_bucket, region
+			| eval success_rate = round((successful_commands / total_commands) * 100, 2)
+			| sort hour_bucket, region
+			| table hour_bucket, region, total_commands, successful_commands, success_rate
+
+command_latency_ms per hour per region
+		butchering excel command eg:
+			=PERCENTILE(IF((I:I="00")*(C:C="NZ-WKO"),F:F),0.95)
+		
+		Splunk command: 
+			index=* 
+			| eval hour_bucket = strftime(_time, "%Y-%m-%dT%H")
+			| stats count AS total_commands,
+        			exactperc95(downlink_success) AS command_latency_ms
+        			BY hour_bucket, region
+			| sort hour_bucket, region
+			| table hour_bucket, region, command_latency_ms
+
+Average of command_latency_ms	perc95 command	
+hour	AU-NSW	NZ-WKO
+00	2999.5	2964
+01	3111.6	3012.9
+02	3061.45	2942.8
+03	3022	3138.6
+04	3028.2	3114.2
+05	2978.15	3653.55
+06	3024.5	6130.5 Warning
+07	3046.5	6789.8 Warning
+08	3050.25	3197.3
+09	2992.4	3029.3
+10	3058.1	3023.8
+11	3028.5	3064.4
+12	3033.85	2979.85
+13	3050	3187.25
+14	3007.8	2980.05
+15	2963.3	3053.5
+16	3061	3047
+17	2991	3005
+18	3078.8	3061.6
+19	3014.45	3079.8
+20	3037.1	3060.8
+21	3126.75	3023.95
+22	3049	3034
+23	3020	2933.05
+Daily	3039	5044.4
+
+
+SLO Summary for 2025-07-23:
+
+	Region=NZ-WKO
+		Downlink success: Passed
+		Latency: Passed
+
+	Region=AU-NSW
+		Downlink success: Passed
+		Latency: Passed
+
+######################
+###Dectection/Alert###
+######################
+
+
+1) from commands.csv, 
+
+	a) flag whenever downlink success=0.
+		parameters: If there are more than 2 failures within 15 minutes, throw a high priority alert
+		possible self healing: increase retry budget until stabilized
+
+	b) flag whenever theres an increase time on command_latency_ms
+		parameters: If command_latency_ms>3500 for more than 5 minutes, throw an medium priority alert
+
+2) from rf_scan.csv and logs(rf_monitor_NZ-WKO-101)
+	
+	a) per region+center_mhz, throw an alert when theres an increase in channel_occupancy and/or noise_floor_dbm
+		parameters: 
+			channel_occupancy > 75%
+			noise_floor_dbm > -115
+		Possible improvements:
+			trigger based from deviation and not using static parameters
+		possible self healing: 
+			move traffic away from impacted center_mhz or add center_mhz using push config channel_plan_NZ-WKO-101.json
+
+3) from gateway_metric.csv
+	Per farm_id+region+backhaul+agent_version, throw an alert when theres a change in values for more than 10 minutes
+		A) lora stats
+			lora_rssi_dbm >-104
+			lora_snr_db <5
+		B) link stats
+			uplink_msgs_per_min <4
+			per_downlink >0.01
+			per_uplink >0.02
+				
+		Possible improvements:
+			trigger based from deviation and not using static parameters
+
+4) convert existing logs into alerts based on events (e.g. Warning/Errors)
+
+	2025-07-23T05:41:12Z WARN elevated noise floor +6dB on 904.1–904.5MHz; occupancy>80%
+	2025-07-23T06:07:55Z WARN lora snr low (median ~1.2dB) while lte sinr nominal (~12dB)
+	2025-07-23T06:44:33Z WARN retry budget high for downlinks; PER up; farms=NZ-WKO-101
+
+	Recovery:
+		Revert back costly changes (related to increase in cost from power output or number usage of frequency changes) when events are capture (e.g. Info)
+			"normalizing"
+			"noise subsiding"
+
+Out of scope:
+		trigger alert for lte stats
+		lte_rsrp_dbm (needs to be defined)
+		lte_sinr_db (needs to be defined)
+
+
+######################
+### Mitigation Plan###
+######################
+
+Work around:
+	1) Relax alert threshold during daily cron when irrigation pump is running
+
+Resolution:
+	1) Change Frequency range of collars away from the same frequency as the pumps are generating
+		source: 	topology_NZ-WKO
+		ActionItem: 	Edit and Push updates for channel_plan_NZ-WKO-101.json
+			    	      "channels": [
+					        903.9,
+        					904.1,
+					        904.3,
+        					904.5
+					      ],
+		
+	Review: 
+		Needs to be reviewed 1-7 days later.
+			1) if lesser channel selection would suffice the business need
+			2) if additional/new channel frequency is clean/quite and is not affected by the pump or any other external factors
+	2) increase retry parameter
+
+Remediation:
+	1) Update channel_plan_NZ-WKO-101.json to permanently stay away from impacted frequency range.
+	2) Create self healing and update channel_plan_NZ-WKO-101.json to increase parameter "sf_default": 10 and "power_dbm": 14 
+		a) cron job whenever the pumps are running
+		b) alert detection to automatically push increased parameter whenever degraded performance is detected
+		c) increase retry parameter?
+
+Recommendation to client:
+	1) Position of the tower.
+		Change Position (away from irrigation pump) or increase tower height (to increase line-of-sight).
+		Cons: will occur cost from clients
+	2) Isolation, covering of relocation of pump.
+		Cons: could even be more expensive for the clients. 
+
+
+
